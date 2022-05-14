@@ -1,0 +1,196 @@
+---
+title: "Covid_Analysis"
+author: "S Mark Hamilton"
+date: '2022-05-11'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+```
+
+
+## Data
+This data contains information about US Covid cases in deaths. It is from the Johns Hopkins website. This data shows the total number of covid cases that have occured in the United States, aggregated by county and state. The data begins in January 2020 and goes to May 2022.
+```{r}
+conf_us = read.csv("https://github.com/CSSEGISandData/COVID-19/raw/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv")
+
+deaths_us = read.csv("https://github.com/CSSEGISandData/COVID-19/raw/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv")
+
+```
+
+
+## Clean Datasets
+
+To clean the datasets I removed the following columns from both the US data:
+
+* 'UID'
+* 'iso2'
+* 'iso3'
+* 'code3'
+* 'FIPS'
+* 'Lat'
+* 'Long_'
+* 'Combined_Key'
+
+I also had to change the date column into a datetime
+
+I then joined the two data sets together so that the combined data set would include both the number of cases and deaths.
+
+The last thing I did was calculate the number of new cases each day.
+```{r}
+# clean US cases
+cases_us <- conf_us %>%
+    pivot_longer(cols = -c('Province_State',
+                           'Country_Region', 'UID', 'iso2', 'iso3', 'code3',
+                           'FIPS', 'Admin2', 'Lat', 'Long_', 'Combined_Key'),
+                 names_to = 'date',
+                 values_to = 'cases') %>%
+    select(-c('UID', 'iso2','iso3', 'code3', 'FIPS', 'Lat', 'Long_', 'Combined_Key'))
+
+# clean us deaths
+death_us <- deaths_us %>%
+    pivot_longer(cols = -c('Province_State',
+                           'Country_Region', 'Population','UID', 'iso2', 'iso3', 'code3',
+                           'FIPS', 'Admin2', 'Lat', 'Long_', 'Combined_Key'),
+                 names_to = 'date',
+                 values_to = 'deaths') %>%
+    select(-c('UID', 'iso2','iso3', 'code3', 'FIPS', 'Lat', 'Long_', 'Combined_Key')) %>%
+    filter(date != 'Population')
+
+# join everything together
+combined <- cases_us %>%
+  full_join(death_us) %>%
+  mutate(date = sub("X*", "", date)) %>%
+  mutate(date = mdy(date)) %>%
+  filter(cases >= 0)
+
+# Add daily new cases
+combined <- combined %>%
+  group_by('Admin2', 'Province_State') %>%
+  mutate(daily_cases = cases - lag(cases)) %>%
+  filter(daily_cases >= 0)%>%
+  select(-c('"Province_State"', '"Admin2"'))
+  
+summary(combined)
+```
+
+## data visualizations 
+
+I used ggplot2 to create a few visualizations to explore the data a bit more. I did a bar graph to show the top 10 states with the highest number of overall cases of Covid-19 and also a bar graph of the states with the 10 lowest Covid-19 cases. The last graph I did was a line graph over time showing the total Covid-19 cases across the country.
+
+To make all of these charts I created a dataset called latest. It is a look at the total number of cases by state over the time period of the data. It also has calculations created for population of the state, deaths in the state, and daily cases. 
+```{r}
+# bar plot of states case counts for top 10 states
+latest <- combined %>%
+  filter(date == max(date)) %>%
+  group_by(Province_State) %>%
+  summarise(total_cases = sum(cases, na.rm=TRUE),
+            population = sum(Population),
+            total_deaths = sum(deaths, na.rm=TRUE),
+            cases_per_day = sum(daily_cases, na.rm=TRUE))
+
+top_ten <- head(latest[order(-latest$total_cases),], 10)
+bottom_ten <-  head(latest[order(latest$total_cases),], 10)
+
+top_ten %>% 
+  ggplot(aes(x=Province_State, y=total_cases))+
+  geom_bar(stat='identity') +
+  labs(title="Total Covid Cases by State",
+        x ="State", y = "Covid-19 Cases") 
+
+bottom_ten %>% 
+  ggplot(aes(x=Province_State, y=total_cases))+
+  geom_bar(stat='identity') +
+  labs(title="Total Covid Cases by State",
+        x ="State", y = "Covid-19 Cases") 
+
+
+# line graph over time of cases
+by_date <- combined %>%
+  group_by(date) %>%
+  summarise(total_us_cases = sum(cases, na.rm=TRUE))
+
+by_date %>%
+  ggplot(aes(x=date, y=total_us_cases)) +
+  geom_line(stat='identity') +
+  labs(title="Covid Cases-19 Over Time",
+        x ="Date", y = "Covid-19 Cases") 
+
+
+```
+
+
+## questions to follow
+
+While exploring the data with the visualizations above, I decided to investigate the following questions:
+
+* Does the time of year cause a higher daily case count?
+* What variables increase the deats? 
+* Does the population effect case rates?
+```{r}
+# find Cases per 100k people
+latest$cases_per_100k <- (latest$total_cases/latest$population) * 100000
+latest <- latest %>%
+  filter(cases_per_100k != 'Inf')
+
+ggplot(latest, aes(x=population, y=cases_per_100k)) + 
+  geom_point()+
+  geom_smooth(method=lm) +
+  labs(title='Population vs Case Rate',
+       ylab = 'Cases rate per 100k',
+       xlab = 'Population')
+
+# check deaths per 100k vs daily cases per 100k
+latest$deaths_per_100k <- (latest$total_deaths/latest$population) * 100000
+ggplot(latest, aes(x=cases_per_100k, y=deaths_per_100k)) + 
+  geom_point()+
+  geom_smooth(method=lm) +
+  labs(title='Daily Cases vs Death rate',
+       ylab = 'Cases Rate',
+       xlab = 'Death Rate')
+
+# average daily cases by month
+# find average daily cases by month
+month_counts <- combined %>%
+  mutate(mnt=month(date)) %>%
+  group_by(mnt) %>%
+  summarize(avg_monthly = mean(daily_cases))
+  
+month_counts %>%
+  ggplot(aes(x=as.factor(mnt), y=avg_monthly)) +
+  geom_bar(stat='identity') +
+  labs(title='Average Daily Covid Cases by Month',
+       ylab = 'Cases per Day',
+       xlab = 'Month Number')
+```
+From my investigation into the question above I found the following answers:
+
+* Does the time of year cause a higher daily case count?
+
+  * Yes, The final bar graph shows that the winter months tend to have a higher daily case count than any other season.
+* Does the population effect case rates?
+
+  * No, It does not appear that population effects the case rate per 100,000 people. This is shown by the scatter plot titled "Population vs Case Rate", where the data points follow a generally flat trend.
+  
+* What variables increase the deaths? 
+
+  * The scatter plot titled "Daily Cases vs Death rate" clearly shows that as the case rate per 100,000 people increases, so does the number of deaths that occur. 
+
+## model
+The model below analyzes the deaths rate by the case rate.
+```{r}
+model <- lm(data=latest, deaths_per_100k~cases_per_100k)
+summary(model)
+```
+
+# session info section
+```{r}
+sessionInfo()
+```
